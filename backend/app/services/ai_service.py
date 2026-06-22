@@ -161,7 +161,43 @@ def _build_product_hints(tenant: Tenant) -> str:
     return f"\nBusiness product catalog: {', '.join(hints)}"
 
 
+IMAGE_KEYWORDS = {"image", "images", "photo", "photos", "picture", "pictures", "pic", "pics", "design", "designs"}
+CATALOG_KEYWORDS = {"catalog", "catalogue", "brochure", "pdf", "document", "price list", "company profile"}
+REQUEST_WORDS = {"show", "send", "share", "see", "view", "display", "look", "want", "give", "need"}
+
+
+def _keyword_preclassify(message: str) -> dict | None:
+    """Quick keyword check to catch obvious media requests."""
+    msg_lower = message.lower().strip()
+    words = set(msg_lower.split())
+
+    wants_image = bool(words & IMAGE_KEYWORDS) and bool(words & REQUEST_WORDS)
+    if wants_image:
+        return {"intent": "image_request", "source": "keyword"}
+
+    has_catalog = any(kw in msg_lower for kw in CATALOG_KEYWORDS)
+    if has_catalog:
+        return {"intent": "catalog_request", "source": "keyword"}
+
+    return None
+
+
+def _extract_product_from_message(message: str, intent: str) -> str:
+    """Naively extract a likely product name for keyword-based intent."""
+    msg_lower = message.lower().strip()
+    stopwords = IMAGE_KEYWORDS | CATALOG_KEYWORDS | REQUEST_WORDS | \
+        {"me", "a", "an", "the", "some", "please", "can", "you", "your", "i", "my", "of", "for", "and", "to", "in", "is", "it", "that", "this", "with", "at", "on"}
+    words = [w for w in msg_lower.split() if w not in stopwords and len(w) > 2]
+    return " ".join(words[:2]) if words else ""
+
+
 async def detect_intent(message: str, tenant: Tenant) -> dict:
+    keyword_hint = _keyword_preclassify(message)
+    if keyword_hint and not settings.groq_api_key:
+        product = _extract_product_from_message(message, keyword_hint["intent"])
+        logger.info("[INTENT_KEYWORD_FALLBACK] intent=%s product=%s", keyword_hint["intent"], product)
+        return {"intent": keyword_hint["intent"], "product": product}
+
     key = settings.groq_api_key
     if not key:
         logger.warning("[INTENT] No Groq API key — skipping intent detection")
@@ -169,16 +205,33 @@ async def detect_intent(message: str, tenant: Tenant) -> dict:
 
     client = AsyncOpenAI(api_key=key, base_url=GROQ_BASE_URL)
     product_hints = _build_product_hints(tenant)
+    hint_note = ""
+    if keyword_hint:
+        hint_note = f"\nNote: This message may be a {keyword_hint['intent']} — confirm or override."
 
     system_prompt = (
         "You are an intent classifier for a business WhatsApp assistant."
-        f"{product_hints}\n\n"
+        f"{product_hints}\n{hint_note}\n\n"
         "Classify the user's message into one of these intents:\n"
-        "- image_request: User wants to SEE pictures/photos/images of products\n"
-        "- catalog_request: User wants a catalog, brochure, price list (document/PDF)\n"
-        "- product_question: User asks about product details, features, or availability\n"
-        "- pricing_question: User asks about prices or costs\n"
-        "- general_chat: Everything else (greetings, small talk, help, etc.)\n\n"
+        "- image_request: User asks to SEE or RECEIVE pictures of products. "
+        "Trigger words: image, images, photo, photos, picture, pictures, pic, pics, design, designs "
+        "combined with show, send, share, see, view\n"
+        "- catalog_request: User asks for a catalog, brochure, price list, or company document. "
+        "Trigger words: catalog, catalogue, brochure, pdf, document, price list, company profile\n"
+        "- product_question: User asks about product details, features, materials, or availability\n"
+        "- pricing_question: User asks about prices, costs, rates, or fees\n"
+        "- general_chat: Everything else — greetings, small talk, thanks, help, complaints\n\n"
+        "Examples:\n"
+        '- "show me sofa pictures" → image_request, product=sofa\n'
+        '- "send me some catalogue" → catalog_request, product=\n'
+        '- "can you send sofa photos" → image_request, product=sofa\n'
+        '- "share furniture brochure" → catalog_request, product=furniture\n'
+        '- "i want to see sofa designs" → image_request, product=sofa\n'
+        '- "do you have a company profile" → catalog_request, product=\n'
+        '- "send product images" → image_request, product=\n'
+        '- "how much is this sofa" → pricing_question, product=sofa\n'
+        '- "what material is this made of" → product_question, product=\n'
+        '- "hello" → general_chat, product=\n'
         "Return ONLY valid JSON. No markdown, no explanation:\n"
         '{"intent": "<intent>", "product": "<specific product name or empty string>"}\n'
         "The product field must be the exact product name the user is asking about."
@@ -192,7 +245,7 @@ async def detect_intent(message: str, tenant: Tenant) -> dict:
                 {"role": "user", "content": message},
             ],
             temperature=0,
-            max_tokens=80,
+            max_tokens=100,
         )
         content = response.choices[0].message.content.strip()
         if content.startswith("```"):
@@ -201,11 +254,25 @@ async def detect_intent(message: str, tenant: Tenant) -> dict:
         intent_val = result.get("intent", "")
         valid = ("image_request", "catalog_request", "product_question", "pricing_question", "general_chat")
         if intent_val not in valid:
+            logger.warning("[INTENT_INVALID] message=%s response=%s", message, content)
+            if keyword_hint:
+                product = _extract_product_from_message(message, keyword_hint["intent"])
+                logger.info("[INTENT_KEYWORD_OVERRIDE] intent=%s product=%s", keyword_hint["intent"], product)
+                return {"intent": keyword_hint["intent"], "product": product}
             return {"intent": "general_chat", "product": ""}
-        return {
-            "intent": intent_val,
-            "product": result.get("product", "") or "",
-        }
+        product = result.get("product", "") or ""
+        return {"intent": intent_val, "product": product}
+    except json.JSONDecodeError:
+        logger.warning("[INTENT_PARSE_FAIL] message=%s raw=%s", message, content if 'content' in dir() else "N/A")
+        if keyword_hint:
+            product = _extract_product_from_message(message, keyword_hint["intent"])
+            logger.info("[INTENT_KEYWORD_OVERRIDE] intent=%s product=%s", keyword_hint["intent"], product)
+            return {"intent": keyword_hint["intent"], "product": product}
+        return {"intent": "general_chat", "product": ""}
     except Exception:
-        logger.warning("[INTENT_PARSE_FAIL] message=%s", message, exc_info=True)
+        logger.warning("[INTENT_API_FAIL] message=%s", message, exc_info=True)
+        if keyword_hint:
+            product = _extract_product_from_message(message, keyword_hint["intent"])
+            logger.info("[INTENT_KEYWORD_OVERRIDE] intent=%s product=%s", keyword_hint["intent"], product)
+            return {"intent": keyword_hint["intent"], "product": product}
         return {"intent": "general_chat", "product": ""}
