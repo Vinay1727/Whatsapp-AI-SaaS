@@ -111,6 +111,7 @@ async def generate_ai_reply(
     messages = _build_messages(system_prompt, conversation_history or [], user_message)
 
     logger.info("[AI_REQUEST] provider=%s model=%s", provider, model)
+    logger.info("[AI_SYSTEM_PROMPT_CONTENT] %s", system_prompt)
 
     try:
         response = await client.chat.completions.create(

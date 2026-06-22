@@ -254,6 +254,11 @@ async def _handle_image_trigger(
     tenant_token: str | None,
 ) -> dict | None:
     keyword = _extract_image_keyword(user_message)
+    
+    logger.info("[USER_MESSAGE] %s", user_message)
+    logger.info("[MEDIA_LIBRARY_COUNT] %s", len(tenant.media_library) if tenant.media_library else 0)
+    logger.info("[IMAGE_KEYWORDS] %s", keyword)
+
     if not keyword:
         return None
 
