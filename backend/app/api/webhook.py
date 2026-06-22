@@ -17,7 +17,7 @@ from app.models.message import MessageContent
 from app.models.webhook import (
     WhatsAppWebhookPayload,
 )
-from app.services.ai_service import generate_ai_reply
+from app.services.ai_service import detect_intent, generate_ai_reply
 from app.repositories.message_repository import update_message_status
 from app.services.logger_service import (
     log_error,
@@ -123,9 +123,6 @@ def extract_message_info(payload: WhatsAppWebhookPayload) -> list[dict]:
     return messages
 
 
-DOCUMENT_TRIGGER_KEYWORDS = ["catalog", "brochure", "price list", "pdf"]
-
-
 def _match_document_item(
     media_library: list,
     keyword: str,
@@ -152,65 +149,6 @@ def _match_document_item(
     return None
 
 
-async def _handle_document_trigger(
-    tenant,
-    user_message: str,
-    sender_wa_id: str,
-    tenant_pid: str | None,
-    tenant_token: str | None,
-) -> dict | None:
-    msg_lower = user_message.lower().strip()
-    keyword = None
-    for kw in DOCUMENT_TRIGGER_KEYWORDS:
-        if kw in msg_lower:
-            keyword = kw
-            break
-    if not keyword:
-        return None
-
-    if not tenant.media_library:
-        logger.info("[CATALOG_TRIGGER] keyword=%s reason=no_media_library", keyword)
-        return None
-
-    match = _match_document_item(tenant.media_library, keyword)
-    if not match:
-        logger.info("[CATALOG_TRIGGER] keyword=%s reason=no_match", keyword)
-        return None
-
-    logger.info(
-        "[CATALOG_TRIGGER] keyword=%s matched=%s url=%s",
-        keyword, match["media_id"], match["url"],
-    )
-
-    try:
-        resp = await whatsapp_service.send_document(
-            to=sender_wa_id,
-            document_url=match["url"],
-            filename=match["filename"],
-            phone_number_id=tenant_pid,
-            access_token=tenant_token,
-        )
-        wamid = resp.get("messages", [{}])[0].get("id")
-        logger.info(
-            "[PDF_SENT] wamid=%s keyword=%s media_id=%s filename=%s",
-            wamid, keyword, match["media_id"], match["filename"],
-        )
-        return {**match, "wamid": wamid}
-    except WhatsAppServiceError as e:
-        log_error("PDF_SEND_FAILED", str(e))
-        return None
-
-
-IMAGE_TRIGGER_PATTERNS = [
-    "show sofa", "sofa image", "sofa design", "sofa picture",
-    "chair image", "chair design", "chair picture",
-    "table image", "table design",
-    "product image", "show product", "show me",
-    "bed image", "bed design",
-    "lamp image", "lamp design",
-]
-
-
 def _match_media_item(
     media_library: list,
     keyword: str,
@@ -233,64 +171,6 @@ def _match_media_item(
                 "media_id": item.media_id,
             }
     return None
-
-
-def _extract_image_keyword(user_message: str) -> str | None:
-    msg_lower = user_message.lower().strip()
-    for pattern in IMAGE_TRIGGER_PATTERNS:
-        if pattern in msg_lower:
-            words = pattern.split()
-            for w in words:
-                if w not in ("show", "image", "picture", "design", "product", "me"):
-                    return w
-    return None
-
-
-async def _handle_image_trigger(
-    tenant,
-    user_message: str,
-    sender_wa_id: str,
-    tenant_pid: str | None,
-    tenant_token: str | None,
-) -> dict | None:
-    keyword = _extract_image_keyword(user_message)
-    
-    logger.info("[IMAGE_KEYWORDS] %s", keyword)
-
-    if not keyword:
-        return None
-
-    if not tenant.media_library:
-        logger.info("[IMAGE_TRIGGER] keyword=%s reason=no_media_library", keyword)
-        return None
-
-    match = _match_media_item(tenant.media_library, keyword)
-    if not match:
-        logger.info("[IMAGE_TRIGGER] keyword=%s reason=no_match", keyword)
-        return None
-
-    logger.info(
-        "[IMAGE_MATCH] keyword=%s matched=%s url=%s",
-        keyword, match["media_id"], match["url"],
-    )
-
-    try:
-        resp = await whatsapp_service.send_image(
-            to=sender_wa_id,
-            image_url=match["url"],
-            caption=match["caption"],
-            phone_number_id=tenant_pid,
-            access_token=tenant_token,
-        )
-        wamid = resp.get("messages", [{}])[0].get("id")
-        logger.info(
-            "[IMAGE_SENT] wamid=%s keyword=%s media_id=%s",
-            wamid, keyword, match["media_id"],
-        )
-        return {**match, "wamid": wamid}
-    except WhatsAppServiceError as e:
-        log_error("IMAGE_SEND_FAILED", str(e))
-        return None
 
 
 async def process_whatsapp_message(
@@ -356,61 +236,82 @@ async def process_whatsapp_message(
     #     pass
 
     if message_type == "text" and message_text:
-        logger.info("[BEFORE_CATALOG_CHECK] text=%s", message_text)
-        doc_result = await _handle_document_trigger(
-            tenant=tenant,
-            user_message=message_text,
-            sender_wa_id=sender_wa_id,
-            tenant_pid=tenant_pid,
-            tenant_token=tenant_token,
-        )
-        if doc_result:
-            await save_outgoing_message(
-                db=db,
-                tenant_id=tenant.tenant_id,
-                session_id=session.session_id,
-                whatsapp_message_id=doc_result.get("wamid"),
-                recipient_number=sender_wa_id,
-                recipient_name=sender_name,
-                message_type="document",
-                message_text=f"[Document: {doc_result.get('caption', '')}]",
-            )
-            return {
-                "tenant_id": tenant.tenant_id,
-                "tenant_name": tenant.name,
-                "session_id": session.session_id,
-                "pdf_sent": True,
-                "document_url": doc_result.get("url"),
-                "caption": doc_result.get("caption"),
-            }
+        intent = await detect_intent(message_text, tenant)
+        logger.info("[INTENT_DETECTED] intent=%s product=%s", intent["intent"], intent.get("product", ""))
 
-        logger.info("[BEFORE_IMAGE_CHECK] text=%s", message_text)
-        image_result = await _handle_image_trigger(
-            tenant=tenant,
-            user_message=message_text,
-            sender_wa_id=sender_wa_id,
-            tenant_pid=tenant_pid,
-            tenant_token=tenant_token,
-        )
-        if image_result:
-            await save_outgoing_message(
-                db=db,
-                tenant_id=tenant.tenant_id,
-                session_id=session.session_id,
-                whatsapp_message_id=image_result.get("wamid"),
-                recipient_number=sender_wa_id,
-                recipient_name=sender_name,
-                message_type="image",
-                message_text=f"[Image: {image_result.get('caption', '')}]",
-            )
-            return {
-                "tenant_id": tenant.tenant_id,
-                "tenant_name": tenant.name,
-                "session_id": session.session_id,
-                "image_sent": True,
-                "image_url": image_result.get("url"),
-                "caption": image_result.get("caption"),
-            }
+        if intent["intent"] == "image_request":
+            product = intent.get("product", "")
+            if product and tenant.media_library:
+                match = _match_media_item(tenant.media_library, product)
+                if match:
+                    logger.info("[MEDIA_MATCH] product=%s matched=%s url=%s", product, match["media_id"], match["url"])
+                    try:
+                        resp = await whatsapp_service.send_image(
+                            to=sender_wa_id,
+                            image_url=match["url"],
+                            caption=match["caption"],
+                            phone_number_id=tenant_pid,
+                            access_token=tenant_token,
+                        )
+                        wamid = resp.get("messages", [{}])[0].get("id")
+                        logger.info("[IMAGE_SENT] wamid=%s product=%s media_id=%s", wamid, product, match["media_id"])
+                        await save_outgoing_message(
+                            db=db,
+                            tenant_id=tenant.tenant_id,
+                            session_id=session.session_id,
+                            whatsapp_message_id=wamid,
+                            recipient_number=sender_wa_id,
+                            recipient_name=sender_name,
+                            message_type="image",
+                            message_text=f"[Image: {match.get('caption', '')}]",
+                        )
+                        return {
+                            "tenant_id": tenant.tenant_id,
+                            "tenant_name": tenant.name,
+                            "session_id": session.session_id,
+                            "image_sent": True,
+                            "image_url": match.get("url"),
+                            "caption": match.get("caption"),
+                        }
+                    except WhatsAppServiceError as e:
+                        log_error("IMAGE_SEND_FAILED", str(e))
+
+        if intent["intent"] == "catalog_request":
+            match = _match_document_item(tenant.media_library, intent.get("product", ""))
+            if match:
+                logger.info("[PDF_MATCH] product=%s matched=%s url=%s", intent.get("product", "") or "any", match["media_id"], match["url"])
+                try:
+                    resp = await whatsapp_service.send_document(
+                        to=sender_wa_id,
+                        document_url=match["url"],
+                        filename=match["filename"],
+                        phone_number_id=tenant_pid,
+                        access_token=tenant_token,
+                    )
+                    wamid = resp.get("messages", [{}])[0].get("id")
+                    logger.info("[PDF_SENT] wamid=%s product=%s media_id=%s", wamid, intent.get("product", "") or "any", match["media_id"])
+                    await save_outgoing_message(
+                        db=db,
+                        tenant_id=tenant.tenant_id,
+                        session_id=session.session_id,
+                        whatsapp_message_id=wamid,
+                        recipient_number=sender_wa_id,
+                        recipient_name=sender_name,
+                        message_type="document",
+                        message_text=f"[Document: {match.get('caption', '')}]",
+                    )
+                    return {
+                        "tenant_id": tenant.tenant_id,
+                        "tenant_name": tenant.name,
+                        "session_id": session.session_id,
+                        "pdf_sent": True,
+                        "document_url": match.get("url"),
+                        "caption": match.get("caption"),
+                    }
+                except WhatsAppServiceError as e:
+                    log_error("PDF_SEND_FAILED", str(e))
+
+        # All other intents or if media matching failed — fall through to AI
 
     if message_type != "text":
         logger.info("[WEBHOOK] Non-text message (type=%s) — sending acknowledgment", message_type)

@@ -1,3 +1,4 @@
+import json
 import logging
 
 from openai import AsyncOpenAI
@@ -139,3 +140,72 @@ async def generate_ai_reply(
         logger.error("[AI_ERROR] provider=%s model=%s error=%s", provider, model, str(e))
         log_error("AI_SERVICE", str(e))
         raise AIServiceError(detail=f"AI API error: {str(e)}")
+
+
+INTENT_MODEL = "llama3-8b-8192"
+
+
+def _build_product_hints(tenant: Tenant) -> str:
+    seen = set()
+    hints = []
+    for item in tenant.media_library:
+        for tag in item.tags:
+            if tag and tag not in seen:
+                hints.append(tag)
+                seen.add(tag)
+        if item.caption and item.caption not in seen:
+            hints.append(item.caption)
+            seen.add(item.caption)
+    if not hints:
+        return ""
+    return f"\nBusiness product catalog: {', '.join(hints)}"
+
+
+async def detect_intent(message: str, tenant: Tenant) -> dict:
+    key = settings.groq_api_key
+    if not key:
+        logger.warning("[INTENT] No Groq API key — skipping intent detection")
+        return {"intent": "general_chat", "product": ""}
+
+    client = AsyncOpenAI(api_key=key, base_url=GROQ_BASE_URL)
+    product_hints = _build_product_hints(tenant)
+
+    system_prompt = (
+        "You are an intent classifier for a business WhatsApp assistant."
+        f"{product_hints}\n\n"
+        "Classify the user's message into one of these intents:\n"
+        "- image_request: User wants to SEE pictures/photos/images of products\n"
+        "- catalog_request: User wants a catalog, brochure, price list (document/PDF)\n"
+        "- product_question: User asks about product details, features, or availability\n"
+        "- pricing_question: User asks about prices or costs\n"
+        "- general_chat: Everything else (greetings, small talk, help, etc.)\n\n"
+        "Return ONLY valid JSON. No markdown, no explanation:\n"
+        '{"intent": "<intent>", "product": "<specific product name or empty string>"}\n'
+        "The product field must be the exact product name the user is asking about."
+    )
+
+    try:
+        response = await client.chat.completions.create(
+            model=INTENT_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            temperature=0,
+            max_tokens=80,
+        )
+        content = response.choices[0].message.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        result = json.loads(content)
+        intent_val = result.get("intent", "")
+        valid = ("image_request", "catalog_request", "product_question", "pricing_question", "general_chat")
+        if intent_val not in valid:
+            return {"intent": "general_chat", "product": ""}
+        return {
+            "intent": intent_val,
+            "product": result.get("product", "") or "",
+        }
+    except Exception:
+        logger.warning("[INTENT_PARSE_FAIL] message=%s", message, exc_info=True)
+        return {"intent": "general_chat", "product": ""}
