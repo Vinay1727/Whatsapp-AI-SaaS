@@ -27,6 +27,14 @@ class WhatsAppService:
     def _get_credentials(self, phone_number_id: str | None = None, access_token: str | None = None):
         pid = phone_number_id or self.phone_number_id
         token = access_token or self.access_token
+
+        logger.info(
+            "[TOKEN_DEBUG] pid=%s token_len=%s token_prefix=%s",
+            pid,
+            len(token) if token else 0,
+            token[:20] if token else "EMPTY"
+        )
+
         if not token:
             raise WhatsAppServiceError(
                 "WHATSAPP_ACCESS_TOKEN is not configured. "
@@ -52,6 +60,12 @@ class WhatsAppService:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+
+        logger.info(
+            "[WHATSAPP_REQUEST] url=%s to=%s",
+            url,
+            payload.get("to")
+        )
 
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
             response = await client.post(url, json=payload, headers=headers)

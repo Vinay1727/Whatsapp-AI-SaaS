@@ -61,6 +61,11 @@ def extract_message_info(payload: WhatsAppWebhookPayload) -> list[dict]:
             if not value.messages:
                 continue
             phone_number_id = value.metadata.phone_number_id
+            logger.info(
+                "[WEBHOOK_PNID] phone_number_id=%r type=%s len=%d",
+                phone_number_id, type(phone_number_id).__name__,
+                len(phone_number_id) if isinstance(phone_number_id, str) else -1,
+            )
             contacts_map = {
                 c.wa_id: c.profile.name for c in value.contacts
             }
