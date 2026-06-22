@@ -20,6 +20,7 @@ from app.models.whatsapp import (
     WhatsAppStatusResponse,
     WhatsAppTextMessageResponse,
 )
+from app.core.config import settings
 from app.services.ai_service import generate_ai_reply
 from app.services.message_service import save_incoming_message, save_outgoing_message
 from app.services.session_service import get_or_create_session
@@ -167,6 +168,9 @@ async def test_ai_reply(
         raise HTTPException(status_code=502, detail=str(e))
 
     model = tenant.ai_config.model if tenant.ai_config else "gpt-4o"
+    provider = (settings.ai_provider or "openai").lower().strip()
+    if provider == "groq" and model == settings.openai_default_model:
+        model = settings.groq_default_model
 
     return AIReplyTestResponse(
         success=True,

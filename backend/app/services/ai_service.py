@@ -66,6 +66,8 @@ async def generate_ai_reply(
     default_model = settings.groq_default_model if provider == "groq" else settings.openai_default_model
 
     model = tenant.ai_config.model if tenant.ai_config else default_model
+    if provider == "groq" and model == settings.openai_default_model:
+        model = settings.groq_default_model
     temperature = tenant.ai_config.temperature if tenant.ai_config else settings.openai_temperature
     max_tokens = tenant.ai_config.max_tokens if tenant.ai_config else settings.openai_max_tokens
     system_prompt = tenant.ai_config.system_prompt if tenant.ai_config else ""
