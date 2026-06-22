@@ -255,8 +255,6 @@ async def _handle_image_trigger(
 ) -> dict | None:
     keyword = _extract_image_keyword(user_message)
     
-    logger.info("[USER_MESSAGE] %s", user_message)
-    logger.info("[MEDIA_LIBRARY_COUNT] %s", len(tenant.media_library) if tenant.media_library else 0)
     logger.info("[IMAGE_KEYWORDS] %s", keyword)
 
     if not keyword:
@@ -307,7 +305,10 @@ async def process_whatsapp_message(
     message_text = msg_info["message_text"]
     content = msg_info["content"]
 
+    logger.info("[USER_MESSAGE] from=%s type=%s text=%s", sender_wa_id, message_type, message_text)
+
     tenant = await get_tenant_by_phone_number_id(db, phone_number_id)
+    logger.info("[MEDIA_LIBRARY_COUNT] tenant=%s count=%d", tenant.tenant_id, len(tenant.media_library))
     log_tenant_identified(phone_number_id, tenant.tenant_id, tenant.name)
 
     session = await get_or_create_session(
@@ -355,6 +356,7 @@ async def process_whatsapp_message(
     #     pass
 
     if message_type == "text" and message_text:
+        logger.info("[BEFORE_CATALOG_CHECK] text=%s", message_text)
         doc_result = await _handle_document_trigger(
             tenant=tenant,
             user_message=message_text,
@@ -382,6 +384,7 @@ async def process_whatsapp_message(
                 "caption": doc_result.get("caption"),
             }
 
+        logger.info("[BEFORE_IMAGE_CHECK] text=%s", message_text)
         image_result = await _handle_image_trigger(
             tenant=tenant,
             user_message=message_text,
@@ -455,6 +458,7 @@ async def process_whatsapp_message(
     ).sort("created_at", -1).limit(20).to_list(length=20)
     conversation_history.reverse()
 
+    logger.info("[BEFORE_AI_CALL] text=%s", message_text)
     try:
         ai_reply = await generate_ai_reply(
             tenant=tenant,
