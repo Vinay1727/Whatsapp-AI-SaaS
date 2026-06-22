@@ -247,7 +247,7 @@ async def send_document(request: DocumentMessageRequest):
 async def send_typing(request: TypingRequest):
     to = _normalise_phone(request.phone)
     try:
-        await whatsapp_service.typing_on(to=to)
+        # await whatsapp_service.typing_on(to=to)
         return WhatsAppStatusResponse(success=True)
     except WhatsAppServiceError as e:
         status_code = e.status_code or status.HTTP_400_BAD_REQUEST

@@ -136,8 +136,8 @@ class TypingRequest(BaseModel):
 
     LangGraph usage:
         Before sending an LLM response, the agent sets the typing indicator.
-        await whatsapp_service.typing_on(to=customer_wa_id)
-        await asyncio.sleep(0.5)           # brief pause for realism
+        # await whatsapp_service.typing_on(to=customer_wa_id)
+        # await asyncio.sleep(0.5)           # brief pause for realism
         await whatsapp_service.send_text(...)
     """
     phone: str = Field(

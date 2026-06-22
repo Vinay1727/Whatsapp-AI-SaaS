@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     webhook_verify_token: str = "my_verify_token_123"
     meta_app_secret: str = ""
 
+    ai_provider: str = "openai"
+    groq_api_key: str = ""
+    groq_default_model: str = "llama-3.3-70b-versatile"
+
     openai_api_key: str = ""
     openai_default_model: str = "gpt-4o"
     openai_max_tokens: int = 1024

@@ -167,14 +167,14 @@ async def process_whatsapp_message(
     except WhatsAppServiceError:
         pass
 
-    try:
-        await whatsapp_service.typing_on(
-            sender_wa_id,
-            phone_number_id=tenant_pid,
-            access_token=tenant_token,
-        )
-    except WhatsAppServiceError:
-        pass
+    # try:
+    #     await whatsapp_service.typing_on(
+    #         sender_wa_id,
+    #         phone_number_id=tenant_pid,
+    #         access_token=tenant_token,
+    #     )
+    # except WhatsAppServiceError:
+    #     pass
 
     if message_type != "text":
         logger.info("[WEBHOOK] Non-text message (type=%s) — sending acknowledgment", message_type)
