@@ -175,6 +175,7 @@ class WhatsAppService:
         }
         return await self._post(payload, phone_number_id, access_token)
 
+    # TODO: Re-enable after WhatsApp API compatible implementation
     async def typing_on(
         self,
         to: str,

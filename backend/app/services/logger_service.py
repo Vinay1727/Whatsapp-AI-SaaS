@@ -40,5 +40,12 @@ def log_message_sent(whatsapp_message_id: str, to: str):
     logger.info("[MESSAGE_SENT] wamid=%s to=%s", whatsapp_message_id, to)
 
 
+def log_message_status(whatsapp_message_id: str, status: str, recipient_id: str):
+    logger.info(
+        "[MESSAGE_STATUS] wamid=%s status=%s recipient=%s",
+        whatsapp_message_id, status, recipient_id,
+    )
+
+
 def log_error(context: str, detail: str):
     logger.error("[ERROR] context=%s detail=%s", context, detail)

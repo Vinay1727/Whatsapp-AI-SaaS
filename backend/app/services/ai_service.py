@@ -39,12 +39,34 @@ def _build_client(api_key: str | None = None) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=key)
 
 
+def _build_tenant_prompt(tenant: Tenant) -> str:
+    if tenant.ai_config and tenant.ai_config.system_prompt:
+        return tenant.ai_config.system_prompt
+
+    business_name = (
+        tenant.settings.business_name
+        or tenant.name
+        or "our business"
+    )
+
+    prompt = (
+        f"You are the official AI assistant for {business_name}. "
+        f"Your job is to help customers with their questions about {business_name}'s "
+        f"products, services, orders, and inquiries. "
+        f"Always respond as a knowledgeable representative of {business_name}. "
+        f"Never say you are an AI language model or a large language model. "
+        f"Never say you are an AI assistant not affiliated with the business. "
+        f"Be helpful, professional, and friendly."
+    )
+    return prompt
+
+
 def _build_messages(
     system_prompt: str,
     conversation_history: list[dict],
     user_message: str,
 ) -> list[dict]:
-    messages = [{"role": "system", "content": system_prompt or "You are a helpful WhatsApp business assistant."}]
+    messages = [{"role": "system", "content": system_prompt}]
     for msg in conversation_history[-10:]:
         role = "assistant" if msg.get("direction") == "outgoing" else "user"
         text = msg.get("message_text") or ""
@@ -70,7 +92,17 @@ async def generate_ai_reply(
         model = settings.groq_default_model
     temperature = tenant.ai_config.temperature if tenant.ai_config else settings.openai_temperature
     max_tokens = tenant.ai_config.max_tokens if tenant.ai_config else settings.openai_max_tokens
-    system_prompt = tenant.ai_config.system_prompt if tenant.ai_config else ""
+
+    system_prompt = _build_tenant_prompt(tenant)
+    business_name = tenant.settings.business_name or tenant.name or "unknown"
+    logger.info(
+        "[AI_CONTEXT] tenant_id=%s business=%s",
+        tenant.tenant_id, business_name,
+    )
+    logger.info(
+        "[AI_SYSTEM_PROMPT] prompt_length=%d",
+        len(system_prompt),
+    )
 
     messages = _build_messages(system_prompt, conversation_history or [], user_message)
 

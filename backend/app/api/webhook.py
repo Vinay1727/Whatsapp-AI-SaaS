@@ -20,12 +20,14 @@ from app.models.webhook import (
 from app.services.ai_service import generate_ai_reply
 from app.services.logger_service import (
     log_error,
+    log_message_status,
     log_tenant_identified,
     log_webhook_received,
 )
 from app.services.message_service import (
     save_incoming_message,
     save_outgoing_message,
+    update_message_status,
 )
 from app.services.session_service import get_or_create_session
 from app.services.tenant_service import get_tenant_by_phone_number_id
@@ -167,6 +169,7 @@ async def process_whatsapp_message(
     except WhatsAppServiceError:
         pass
 
+    # TODO: Re-enable after WhatsApp API compatible implementation
     # try:
     #     await whatsapp_service.typing_on(
     #         sender_wa_id,
@@ -264,6 +267,39 @@ async def process_whatsapp_message(
     }
 
 
+def extract_status_info(payload: WhatsAppWebhookPayload) -> list[dict]:
+    statuses = []
+    for entry in payload.entry:
+        for change in entry.changes:
+            value = change.value
+            for s in value.statuses:
+                statuses.append({
+                    "whatsapp_message_id": s.id,
+                    "status": s.status,
+                    "recipient_id": s.recipient_id,
+                    "timestamp": s.timestamp,
+                })
+    return statuses
+
+
+async def process_status_update(
+    db: AsyncIOMotorDatabase,
+    status_info: dict,
+) -> dict:
+    wamid = status_info["whatsapp_message_id"]
+    status = status_info["status"]
+    recipient_id = status_info["recipient_id"]
+
+    log_message_status(wamid, status, recipient_id)
+    await update_message_status(db, wamid, status)
+
+    return {
+        "whatsapp_message_id": wamid,
+        "status": status,
+        "updated": True,
+    }
+
+
 @router.get("")
 async def verify_webhook(
     hub_mode: str = Query(None, alias="hub.mode"),
@@ -331,6 +367,16 @@ async def receive_webhook(
             log_error("UNEXPECTED", str(e))
             results.append({
                 "error": f"Unexpected error: {str(e)}",
+            })
+
+    for status_info in extract_status_info(payload):
+        try:
+            result = await process_status_update(db, status_info)
+            results.append(result)
+        except Exception as e:
+            log_error("STATUS_UPDATE", str(e))
+            results.append({
+                "error": f"Status update error: {str(e)}",
             })
 
     logger.info("[WEBHOOK_PROCESSED] messages=%d", len(results))

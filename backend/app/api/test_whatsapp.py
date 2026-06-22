@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.db.mongodb import get_db
@@ -243,6 +243,66 @@ async def send_document(request: DocumentMessageRequest):
         raise HTTPException(status_code=status_code, detail=e.message)
 
 
+@router.get(
+    "/send-image",
+    summary="Send a test image via WhatsApp (GET)",
+    description="Sends a public test image to the specified phone number.",
+)
+async def send_image_get(
+    phone: str = Query(..., description="Recipient phone number"),
+    image_url: str = Query(
+        default="https://via.placeholder.com/600x400.png?text=WhatsApp+Test+Image",
+        description="Public image URL",
+    ),
+    caption: str = Query(default="Test image from WhatsApp SaaS", description="Image caption"),
+):
+    to = _normalise_phone(phone)
+    try:
+        response = await whatsapp_service.send_image(to=to, image_url=image_url, caption=caption)
+        return {
+            "success": True,
+            "whatsapp_message_id": _extract_message_id(response),
+            "to": to,
+            "type": "image",
+        }
+    except WhatsAppServiceError as e:
+        raise HTTPException(
+            status_code=e.status_code or status.HTTP_400_BAD_REQUEST,
+            detail=e.message,
+        )
+
+
+@router.get(
+    "/send-document",
+    summary="Send a test document via WhatsApp (GET)",
+    description="Sends a public test PDF to the specified phone number.",
+)
+async def send_document_get(
+    phone: str = Query(..., description="Recipient phone number"),
+    document_url: str = Query(
+        default="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+        description="Public document URL",
+    ),
+    filename: str = Query(default="test-document.pdf", description="Display filename"),
+):
+    to = _normalise_phone(phone)
+    try:
+        response = await whatsapp_service.send_document(
+            to=to, document_url=document_url, filename=filename,
+        )
+        return {
+            "success": True,
+            "whatsapp_message_id": _extract_message_id(response),
+            "to": to,
+            "type": "document",
+        }
+    except WhatsAppServiceError as e:
+        raise HTTPException(
+            status_code=e.status_code or status.HTTP_400_BAD_REQUEST,
+            detail=e.message,
+        )
+
+
 @router.post(
     "/typing",
     response_model=WhatsAppStatusResponse,
@@ -250,9 +310,6 @@ async def send_document(request: DocumentMessageRequest):
 )
 async def send_typing(request: TypingRequest):
     to = _normalise_phone(request.phone)
-    try:
-        # await whatsapp_service.typing_on(to=to)
-        return WhatsAppStatusResponse(success=True)
-    except WhatsAppServiceError as e:
-        status_code = e.status_code or status.HTTP_400_BAD_REQUEST
-        raise HTTPException(status_code=status_code, detail=e.message)
+    # TODO: Re-enable after WhatsApp API compatible implementation
+    # await whatsapp_service.typing_on(to=to)
+    return WhatsAppStatusResponse(success=True)

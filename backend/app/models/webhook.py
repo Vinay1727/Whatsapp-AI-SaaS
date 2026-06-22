@@ -60,11 +60,21 @@ class WhatsAppMetadata(BaseModel):
     display_phone_number: str = ""
 
 
+class WhatsAppStatusEntry(BaseModel):
+    id: str = ""
+    status: str = ""
+    timestamp: str = ""
+    recipient_id: str = ""
+    conversation: Optional[dict] = None
+    pricing: Optional[dict] = None
+
+
 class WhatsAppValue(BaseModel):
     messaging_product: str = ""
     metadata: WhatsAppMetadata = WhatsAppMetadata()
     contacts: list[WhatsAppContact] = []
     messages: list[WhatsAppMessage] = []
+    statuses: list[WhatsAppStatusEntry] = []
 
 
 class WhatsAppChange(BaseModel):
