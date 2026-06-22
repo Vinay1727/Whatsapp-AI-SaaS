@@ -47,5 +47,33 @@ def log_message_status(whatsapp_message_id: str, status: str, recipient_id: str)
     )
 
 
+def log_message_sent_status(whatsapp_message_id: str, recipient_id: str):
+    logger.info(
+        "[MESSAGE_SENT] wamid=%s recipient=%s",
+        whatsapp_message_id, recipient_id,
+    )
+
+
+def log_message_delivered(whatsapp_message_id: str, recipient_id: str):
+    logger.info(
+        "[MESSAGE_DELIVERED] wamid=%s recipient=%s",
+        whatsapp_message_id, recipient_id,
+    )
+
+
+def log_message_read(whatsapp_message_id: str, recipient_id: str):
+    logger.info(
+        "[MESSAGE_READ] wamid=%s recipient=%s",
+        whatsapp_message_id, recipient_id,
+    )
+
+
+def log_message_failed(whatsapp_message_id: str, recipient_id: str):
+    logger.warning(
+        "[MESSAGE_FAILED] wamid=%s recipient=%s",
+        whatsapp_message_id, recipient_id,
+    )
+
+
 def log_error(context: str, detail: str):
     logger.error("[ERROR] context=%s detail=%s", context, detail)

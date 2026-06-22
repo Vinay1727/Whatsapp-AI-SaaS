@@ -18,16 +18,19 @@ from app.models.webhook import (
     WhatsAppWebhookPayload,
 )
 from app.services.ai_service import generate_ai_reply
+from app.repositories.message_repository import update_message_status
 from app.services.logger_service import (
     log_error,
-    log_message_status,
+    log_message_delivered,
+    log_message_failed,
+    log_message_read,
+    log_message_sent_status,
     log_tenant_identified,
     log_webhook_received,
 )
 from app.services.message_service import (
     save_incoming_message,
     save_outgoing_message,
-    update_message_status,
 )
 from app.services.session_service import get_or_create_session
 from app.services.tenant_service import get_tenant_by_phone_number_id
@@ -120,6 +123,173 @@ def extract_message_info(payload: WhatsAppWebhookPayload) -> list[dict]:
     return messages
 
 
+DOCUMENT_TRIGGER_KEYWORDS = ["catalog", "brochure", "price list", "pdf"]
+
+
+def _match_document_item(
+    media_library: list,
+    keyword: str,
+) -> dict | None:
+    keyword_lower = keyword.lower()
+    for item in media_library:
+        if not item.active or item.type != "document":
+            continue
+        tags_lower = [t.lower() for t in item.tags]
+        caption_lower = item.caption.lower() if item.caption else ""
+        media_id_lower = item.media_id.lower() if item.media_id else ""
+        if (
+            keyword_lower in caption_lower
+            or any(keyword_lower in t for t in tags_lower)
+            or keyword_lower in media_id_lower
+        ):
+            filename = f"{item.media_id}.pdf" if item.media_id else "document.pdf"
+            return {
+                "url": item.url,
+                "caption": item.caption or keyword.capitalize(),
+                "media_id": item.media_id,
+                "filename": filename,
+            }
+    return None
+
+
+async def _handle_document_trigger(
+    tenant,
+    user_message: str,
+    sender_wa_id: str,
+    tenant_pid: str | None,
+    tenant_token: str | None,
+) -> dict | None:
+    msg_lower = user_message.lower().strip()
+    keyword = None
+    for kw in DOCUMENT_TRIGGER_KEYWORDS:
+        if kw in msg_lower:
+            keyword = kw
+            break
+    if not keyword:
+        return None
+
+    if not tenant.media_library:
+        logger.info("[CATALOG_TRIGGER] keyword=%s reason=no_media_library", keyword)
+        return None
+
+    match = _match_document_item(tenant.media_library, keyword)
+    if not match:
+        logger.info("[CATALOG_TRIGGER] keyword=%s reason=no_match", keyword)
+        return None
+
+    logger.info(
+        "[CATALOG_TRIGGER] keyword=%s matched=%s url=%s",
+        keyword, match["media_id"], match["url"],
+    )
+
+    try:
+        resp = await whatsapp_service.send_document(
+            to=sender_wa_id,
+            document_url=match["url"],
+            filename=match["filename"],
+            phone_number_id=tenant_pid,
+            access_token=tenant_token,
+        )
+        wamid = resp.get("messages", [{}])[0].get("id")
+        logger.info(
+            "[PDF_SENT] wamid=%s keyword=%s media_id=%s filename=%s",
+            wamid, keyword, match["media_id"], match["filename"],
+        )
+        return {**match, "wamid": wamid}
+    except WhatsAppServiceError as e:
+        log_error("PDF_SEND_FAILED", str(e))
+        return None
+
+
+IMAGE_TRIGGER_PATTERNS = [
+    "show sofa", "sofa image", "sofa design", "sofa picture",
+    "chair image", "chair design", "chair picture",
+    "table image", "table design",
+    "product image", "show product", "show me",
+    "bed image", "bed design",
+    "lamp image", "lamp design",
+]
+
+
+def _match_media_item(
+    media_library: list,
+    keyword: str,
+) -> dict | None:
+    keyword_lower = keyword.lower()
+    for item in media_library:
+        if not item.active or item.type != "image":
+            continue
+        tags_lower = [t.lower() for t in item.tags]
+        caption_lower = item.caption.lower() if item.caption else ""
+        media_id_lower = item.media_id.lower() if item.media_id else ""
+        if (
+            keyword_lower in caption_lower
+            or any(keyword_lower in t for t in tags_lower)
+            or keyword_lower in media_id_lower
+        ):
+            return {
+                "url": item.url,
+                "caption": item.caption or keyword.capitalize(),
+                "media_id": item.media_id,
+            }
+    return None
+
+
+def _extract_image_keyword(user_message: str) -> str | None:
+    msg_lower = user_message.lower().strip()
+    for pattern in IMAGE_TRIGGER_PATTERNS:
+        if pattern in msg_lower:
+            words = pattern.split()
+            for w in words:
+                if w not in ("show", "image", "picture", "design", "product", "me"):
+                    return w
+    return None
+
+
+async def _handle_image_trigger(
+    tenant,
+    user_message: str,
+    sender_wa_id: str,
+    tenant_pid: str | None,
+    tenant_token: str | None,
+) -> dict | None:
+    keyword = _extract_image_keyword(user_message)
+    if not keyword:
+        return None
+
+    if not tenant.media_library:
+        logger.info("[IMAGE_TRIGGER] keyword=%s reason=no_media_library", keyword)
+        return None
+
+    match = _match_media_item(tenant.media_library, keyword)
+    if not match:
+        logger.info("[IMAGE_TRIGGER] keyword=%s reason=no_match", keyword)
+        return None
+
+    logger.info(
+        "[IMAGE_MATCH] keyword=%s matched=%s url=%s",
+        keyword, match["media_id"], match["url"],
+    )
+
+    try:
+        resp = await whatsapp_service.send_image(
+            to=sender_wa_id,
+            image_url=match["url"],
+            caption=match["caption"],
+            phone_number_id=tenant_pid,
+            access_token=tenant_token,
+        )
+        wamid = resp.get("messages", [{}])[0].get("id")
+        logger.info(
+            "[IMAGE_SENT] wamid=%s keyword=%s media_id=%s",
+            wamid, keyword, match["media_id"],
+        )
+        return {**match, "wamid": wamid}
+    except WhatsAppServiceError as e:
+        log_error("IMAGE_SEND_FAILED", str(e))
+        return None
+
+
 async def process_whatsapp_message(
     db: AsyncIOMotorDatabase,
     msg_info: dict,
@@ -178,6 +348,61 @@ async def process_whatsapp_message(
     #     )
     # except WhatsAppServiceError:
     #     pass
+
+    if message_type == "text" and message_text:
+        doc_result = await _handle_document_trigger(
+            tenant=tenant,
+            user_message=message_text,
+            sender_wa_id=sender_wa_id,
+            tenant_pid=tenant_pid,
+            tenant_token=tenant_token,
+        )
+        if doc_result:
+            await save_outgoing_message(
+                db=db,
+                tenant_id=tenant.tenant_id,
+                session_id=session.session_id,
+                whatsapp_message_id=doc_result.get("wamid"),
+                recipient_number=sender_wa_id,
+                recipient_name=sender_name,
+                message_type="document",
+                message_text=f"[Document: {doc_result.get('caption', '')}]",
+            )
+            return {
+                "tenant_id": tenant.tenant_id,
+                "tenant_name": tenant.name,
+                "session_id": session.session_id,
+                "pdf_sent": True,
+                "document_url": doc_result.get("url"),
+                "caption": doc_result.get("caption"),
+            }
+
+        image_result = await _handle_image_trigger(
+            tenant=tenant,
+            user_message=message_text,
+            sender_wa_id=sender_wa_id,
+            tenant_pid=tenant_pid,
+            tenant_token=tenant_token,
+        )
+        if image_result:
+            await save_outgoing_message(
+                db=db,
+                tenant_id=tenant.tenant_id,
+                session_id=session.session_id,
+                whatsapp_message_id=image_result.get("wamid"),
+                recipient_number=sender_wa_id,
+                recipient_name=sender_name,
+                message_type="image",
+                message_text=f"[Image: {image_result.get('caption', '')}]",
+            )
+            return {
+                "tenant_id": tenant.tenant_id,
+                "tenant_name": tenant.name,
+                "session_id": session.session_id,
+                "image_sent": True,
+                "image_url": image_result.get("url"),
+                "caption": image_result.get("caption"),
+            }
 
     if message_type != "text":
         logger.info("[WEBHOOK] Non-text message (type=%s) — sending acknowledgment", message_type)
@@ -282,6 +507,14 @@ def extract_status_info(payload: WhatsAppWebhookPayload) -> list[dict]:
     return statuses
 
 
+_STATUS_LOG_MAP = {
+    "sent": log_message_sent_status,
+    "delivered": log_message_delivered,
+    "read": log_message_read,
+    "failed": log_message_failed,
+}
+
+
 async def process_status_update(
     db: AsyncIOMotorDatabase,
     status_info: dict,
@@ -289,9 +522,13 @@ async def process_status_update(
     wamid = status_info["whatsapp_message_id"]
     status = status_info["status"]
     recipient_id = status_info["recipient_id"]
+    timestamp = status_info.get("timestamp")
 
-    log_message_status(wamid, status, recipient_id)
-    await update_message_status(db, wamid, status)
+    log_fn = _STATUS_LOG_MAP.get(status)
+    if log_fn:
+        log_fn(wamid, recipient_id)
+
+    await update_message_status(db, wamid, status, status_timestamp=timestamp)
 
     return {
         "whatsapp_message_id": wamid,

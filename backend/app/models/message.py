@@ -28,6 +28,7 @@ class MessageBase(BaseModel):
     message_text: Optional[str] = None
     content: MessageContent = MessageContent()
     whatsapp_status: str = "received"
+    status_timestamp: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
